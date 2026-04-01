@@ -24,6 +24,8 @@ struct AgentRunner {
     last_turn_at: Option<Instant>,
     /// Tracks consecutive turns that completed within 10s (for backoff).
     consecutive_fast_turns: u32,
+    /// Extra flags to pass to the claude CLI.
+    claude_args: Vec<String>,
 }
 
 /// Run a single Claude Code CLI turn with the given prompt.
@@ -40,6 +42,10 @@ async fn run_claude_turn(runner: &mut AgentRunner, prompt: &str) -> Result<()> {
 
     if let Some(ref session_id) = runner.session_id {
         cmd.arg("--resume").arg(session_id);
+    }
+
+    for arg in &runner.claude_args {
+        cmd.arg(arg);
     }
 
     cmd.arg(prompt);
@@ -242,6 +248,7 @@ pub async fn run(args: AgentArgs) -> Result<()> {
         turn_timeout,
         last_turn_at: None,
         consecutive_fast_turns: 0,
+        claude_args: args.claude_args,
     };
 
     // Main loop: poll for events, run Claude turns, handle idle
@@ -355,6 +362,7 @@ mod tests {
             turn_timeout: Duration::from_secs(600),
             last_turn_at: None,
             consecutive_fast_turns: 0,
+            claude_args: vec![],
         };
         assert!(!should_idle(&runner));
     }
@@ -369,6 +377,7 @@ mod tests {
             turn_timeout: Duration::from_secs(600),
             last_turn_at: None,
             consecutive_fast_turns: 0,
+            claude_args: vec![],
         };
         assert!(!should_idle(&runner));
     }
@@ -383,6 +392,7 @@ mod tests {
             turn_timeout: Duration::from_secs(600),
             last_turn_at: None,
             consecutive_fast_turns: 0,
+            claude_args: vec![],
         };
         // First idle should fire immediately since no turn has ever run
         assert!(should_idle(&runner));
@@ -398,6 +408,7 @@ mod tests {
             turn_timeout: Duration::from_secs(600),
             last_turn_at: Some(Instant::now()),
             consecutive_fast_turns: 0,
+            claude_args: vec![],
         };
         // Just ran, should not idle yet
         assert!(!should_idle(&runner));

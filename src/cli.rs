@@ -100,4 +100,7 @@ pub struct AgentArgs {
     /// Maximum duration for a single turn (default: 600s)
     #[arg(long, default_value = "600s")]
     pub turn_timeout: Option<String>,
+    /// Extra flags passed to claude CLI (after --)
+    #[arg(last = true)]
+    pub claude_args: Vec<String>,
 }
