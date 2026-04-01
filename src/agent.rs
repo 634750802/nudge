@@ -96,8 +96,8 @@ async fn run_claude_turn(runner: &mut AgentRunner, prompt: &str) -> Result<()> {
                 }
             }
 
-            // Log all other lines for debugging
-            eprintln!("[claude] {line}");
+            // Log raw stream lines only at trace level to avoid noise
+            tracing::trace!("[claude] {line}");
         }
         Ok::<(), anyhow::Error>(())
     };
