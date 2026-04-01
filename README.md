@@ -127,7 +127,7 @@ Or for agents managed by `nudge agent`:
 When running `nudge agent`, pass the agent skill file so Claude knows how to use nudge:
 
 ```bash
-nudge agent --idle-every 4h --idle-prompt-file idle.md -- --model sonnet --permission-mode bypassPermissions -a skills/nudge-agent.md
+nudge agent --idle-every 4h --idle-prompt-file idle.md -- --model sonnet --permission-mode bypassPermissions --append-system-prompt-file skills/nudge-agent.md
 ```
 
 ## Build from source
