@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use clap::{Parser, Subcommand, Args};
 
 #[derive(Parser)]
@@ -24,6 +25,8 @@ pub enum Command {
     Status,
     /// Start the daemon (usually auto-started)
     Daemon(DaemonArgs),
+    /// Run as a long-lived agent with idle-turn scheduling
+    Agent(AgentArgs),
 }
 
 #[derive(Args)]
@@ -38,6 +41,15 @@ pub struct WaitArgs {
     /// GitHub repo (owner/repo)
     #[arg(long)]
     pub repo: Option<String>,
+    /// Register subscription and return immediately (don't block)
+    #[arg(long)]
+    pub detach: bool,
+    /// Note for what to do when event fires
+    #[arg(long)]
+    pub memo: Option<String>,
+    /// Agent ID (set automatically via NUDGE_AGENT_ID env var)
+    #[arg(long, env = "NUDGE_AGENT_ID", hide = true)]
+    pub agent_id: Option<String>,
 }
 
 #[derive(Args)]
@@ -75,4 +87,17 @@ pub struct DaemonArgs {
     /// Webhook listen port
     #[arg(long, default_value = "9876")]
     pub webhook_port: u16,
+}
+
+#[derive(Args)]
+pub struct AgentArgs {
+    /// Interval for idle-turn checks (e.g., "4h", "30m")
+    #[arg(long)]
+    pub idle_every: Option<String>,
+    /// File containing the idle-turn prompt
+    #[arg(long)]
+    pub idle_prompt_file: Option<PathBuf>,
+    /// Maximum duration for a single turn (default: 600s)
+    #[arg(long, default_value = "600s")]
+    pub turn_timeout: Option<String>,
 }

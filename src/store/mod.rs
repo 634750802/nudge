@@ -33,6 +33,20 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_sub_status ON subscriptions(status);
             CREATE INDEX IF NOT EXISTS idx_sub_source ON subscriptions(source);",
         )?;
+
+        // Schema migrations: add new columns (ignore "duplicate column" errors)
+        for col in ["memo TEXT", "agent_id TEXT", "dispatched_at INTEGER"] {
+            let sql = format!("ALTER TABLE subscriptions ADD COLUMN {col}");
+            match conn.execute(&sql, []) {
+                Ok(_) => {}
+                Err(e) if e.to_string().contains("duplicate column") => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_sub_agent_id ON subscriptions(agent_id);",
+        )?;
+
         Ok(Self { conn })
     }
 
@@ -52,8 +66,8 @@ impl Store {
 
     pub fn insert(&self, sub: &Subscription) -> Result<String> {
         self.conn.execute(
-            "INSERT INTO subscriptions (id, source, condition, mode, callback, status, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO subscriptions (id, source, condition, mode, callback, status, created_at, expires_at, memo, agent_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 sub.id,
                 sub.source,
@@ -63,6 +77,8 @@ impl Store {
                 sub.status,
                 sub.created_at,
                 sub.expires_at,
+                sub.memo,
+                sub.agent_id,
             ],
         )?;
         Ok(sub.id.clone())
@@ -70,7 +86,7 @@ impl Store {
 
     pub fn get(&self, id: &str) -> Result<Option<Subscription>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, source, condition, mode, callback, status, created_at, expires_at, event_data
+            "SELECT id, source, condition, mode, callback, status, created_at, expires_at, event_data, memo, agent_id
              FROM subscriptions WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
@@ -89,7 +105,7 @@ impl Store {
     }
 
     pub fn list(&self, source: Option<&str>, status: Option<&str>) -> Result<Vec<Subscription>> {
-        let mut sql = "SELECT id, source, condition, mode, callback, status, created_at, expires_at, event_data FROM subscriptions WHERE 1=1".to_string();
+        let mut sql = "SELECT id, source, condition, mode, callback, status, created_at, expires_at, event_data, memo, agent_id FROM subscriptions WHERE 1=1".to_string();
         let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
 
         if let Some(s) = source {
@@ -173,6 +189,43 @@ impl Store {
         }
         Ok(counts)
     }
+
+    pub fn list_fired_for_agent(&self, agent_id: &str) -> Result<Vec<Subscription>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source, condition, mode, callback, status, created_at, expires_at, event_data, memo, agent_id
+             FROM subscriptions
+             WHERE agent_id = ?1 AND status = 'fired' AND dispatched_at IS NULL
+             ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![agent_id], |row| Ok(row_to_sub(row)))?;
+        let mut subs = vec![];
+        for row in rows {
+            if let Some(sub) = row? {
+                subs.push(sub);
+            }
+        }
+        Ok(subs)
+    }
+
+    pub fn mark_dispatched(&self, ids: &[String]) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        for id in ids {
+            self.conn.execute(
+                "UPDATE subscriptions SET dispatched_at = ?1 WHERE id = ?2",
+                params![now, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn has_active_subscriptions(&self, agent_id: &str) -> Result<bool> {
+        let has: bool = self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM subscriptions WHERE agent_id = ?1 AND status = 'active'",
+            params![agent_id],
+            |row| row.get(0),
+        )?;
+        Ok(has)
+    }
 }
 
 fn row_to_sub(row: &rusqlite::Row) -> Option<Subscription> {
@@ -198,6 +251,8 @@ fn row_to_sub(row: &rusqlite::Row) -> Option<Subscription> {
         created_at: row.get(6).unwrap_or(0),
         expires_at: row.get(7).unwrap_or(None),
         event_data: event_str.and_then(|s| serde_json::from_str(&s).ok()),
+        memo: row.get(9).unwrap_or(None),
+        agent_id: row.get(10).unwrap_or(None),
     })
 }
 
@@ -225,6 +280,8 @@ mod tests {
             created_at: 1000,
             expires_at: None,
             event_data: None,
+            memo: None,
+            agent_id: None,
         }
     }
 
@@ -254,6 +311,8 @@ mod tests {
             created_at: 1000,
             expires_at: None,
             event_data: None,
+            memo: None,
+            agent_id: None,
         };
         store.insert(&sub).unwrap();
         let got = store.get("gh-1").unwrap().unwrap();
@@ -335,5 +394,113 @@ mod tests {
         assert_eq!(expired, 0);
         let got = store.get("test-order").unwrap().unwrap();
         assert_eq!(got.status, "fired");
+    }
+
+    #[test]
+    fn test_insert_with_memo_and_agent_id() {
+        let store = Store::open(":memory:").unwrap();
+        let mut sub = timer_sub("agent-sub-1");
+        sub.memo = Some("watch CI for deploy".into());
+        sub.agent_id = Some("agent-abc".into());
+        store.insert(&sub).unwrap();
+        let got = store.get("agent-sub-1").unwrap().unwrap();
+        assert_eq!(got.memo.as_deref(), Some("watch CI for deploy"));
+        assert_eq!(got.agent_id.as_deref(), Some("agent-abc"));
+    }
+
+    #[test]
+    fn test_list_fired_for_agent() {
+        let store = Store::open(":memory:").unwrap();
+
+        // Insert a fired sub with agent_id
+        let mut sub1 = timer_sub("af-1");
+        sub1.agent_id = Some("agent-x".into());
+        sub1.status = "fired".into();
+        store.insert(&sub1).unwrap();
+
+        // Insert an active sub with same agent_id (should NOT appear)
+        let mut sub2 = timer_sub("af-2");
+        sub2.agent_id = Some("agent-x".into());
+        store.insert(&sub2).unwrap();
+
+        // Insert a fired sub with different agent_id (should NOT appear)
+        let mut sub3 = timer_sub("af-3");
+        sub3.agent_id = Some("agent-y".into());
+        sub3.status = "fired".into();
+        store.insert(&sub3).unwrap();
+
+        // Insert a fired sub with no agent_id (should NOT appear)
+        let mut sub4 = timer_sub("af-4");
+        sub4.status = "fired".into();
+        store.insert(&sub4).unwrap();
+
+        let fired = store.list_fired_for_agent("agent-x").unwrap();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].id, "af-1");
+    }
+
+    #[test]
+    fn test_mark_dispatched() {
+        let store = Store::open(":memory:").unwrap();
+
+        let mut sub1 = timer_sub("md-1");
+        sub1.agent_id = Some("agent-d".into());
+        sub1.status = "fired".into();
+        store.insert(&sub1).unwrap();
+
+        let mut sub2 = timer_sub("md-2");
+        sub2.agent_id = Some("agent-d".into());
+        sub2.status = "fired".into();
+        store.insert(&sub2).unwrap();
+
+        // Both should appear before dispatch
+        let fired = store.list_fired_for_agent("agent-d").unwrap();
+        assert_eq!(fired.len(), 2);
+
+        // Mark one as dispatched
+        store.mark_dispatched(&["md-1".into()]).unwrap();
+
+        // Only one should remain
+        let fired = store.list_fired_for_agent("agent-d").unwrap();
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].id, "md-2");
+
+        // Mark the other
+        store.mark_dispatched(&["md-2".into()]).unwrap();
+        let fired = store.list_fired_for_agent("agent-d").unwrap();
+        assert_eq!(fired.len(), 0);
+    }
+
+    #[test]
+    fn test_has_active_subscriptions() {
+        let store = Store::open(":memory:").unwrap();
+
+        // No subscriptions yet
+        assert!(!store.has_active_subscriptions("agent-ha").unwrap());
+
+        // Insert an active sub for the agent
+        let mut sub = timer_sub("ha-1");
+        sub.agent_id = Some("agent-ha".into());
+        store.insert(&sub).unwrap();
+        assert!(store.has_active_subscriptions("agent-ha").unwrap());
+
+        // Different agent should still be false
+        assert!(!store.has_active_subscriptions("agent-other").unwrap());
+
+        // Fire the subscription — should become false
+        store.set_fired("ha-1", &serde_json::json!({})).unwrap();
+        assert!(!store.has_active_subscriptions("agent-ha").unwrap());
+    }
+
+    #[test]
+    fn test_has_active_subscriptions_no_agent_id() {
+        let store = Store::open(":memory:").unwrap();
+
+        // Insert an active sub without agent_id
+        let sub = timer_sub("ha-no-agent");
+        store.insert(&sub).unwrap();
+
+        // Should not match any agent_id query
+        assert!(!store.has_active_subscriptions("agent-z").unwrap());
     }
 }

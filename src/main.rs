@@ -1,3 +1,4 @@
+mod agent;
 mod cli;
 mod store;
 mod checker;
@@ -26,10 +27,12 @@ async fn main() -> Result<()> {
         Command::Cancel { id } => cmd_cancel(&id).await,
         Command::Status => cmd_status().await,
         Command::Daemon(args) => cmd_daemon(args).await,
+        Command::Agent(args) => agent::run(args).await,
     }
 }
 
 async fn cmd_wait(args: cli::WaitArgs) -> Result<()> {
+    let detach = args.detach;
     let sub = subscription::Subscription::from_wait_args(&args)?;
 
     // Ensure daemon is running BEFORE inserting — avoids orphan subscriptions if daemon fails
@@ -37,6 +40,18 @@ async fn cmd_wait(args: cli::WaitArgs) -> Result<()> {
 
     let db = store::Store::open_default()?;
     let id = db.insert(&sub)?;
+
+    if detach {
+        // Print hint and exit — the agent loop will pick up the fired event later
+        let summary = sub.condition_summary();
+        println!("Watching {summary} in background.");
+        if let Some(ref memo) = sub.memo {
+            println!("Memo: {memo}");
+        }
+        println!("You can end this turn. A new turn will start when the event fires.");
+        return Ok(());
+    }
+
     tracing::info!(id = %id, source = %sub.source, "Watching...");
 
     // Block until fired or timeout
