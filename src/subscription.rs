@@ -54,6 +54,8 @@ pub struct Subscription {
     pub created_at: i64,    // epoch seconds
     pub expires_at: Option<i64>,
     pub event_data: Option<serde_json::Value>,
+    pub memo: Option<String>,
+    pub agent_id: Option<String>,
 }
 
 impl Subscription {
@@ -61,17 +63,20 @@ impl Subscription {
         let condition = parse_condition(&args.source, &args.args, args.repo.as_deref())?;
         let expires_at = args.timeout.as_deref().map(parse_duration_secs).transpose()?
             .map(|d| Utc::now().timestamp() + d);
+        let mode = if args.detach { "detach" } else { "wait" };
 
         Ok(Self {
             id: uuid::Uuid::new_v4().to_string()[..8].to_string(),
             source: condition.source_name().to_string(),
             condition,
-            mode: "wait".into(),
+            mode: mode.into(),
             callback: None,
             status: "active".into(),
             created_at: Utc::now().timestamp(),
             expires_at,
             event_data: None,
+            memo: args.memo.clone(),
+            agent_id: args.agent_id.clone(),
         })
     }
 
@@ -90,11 +95,13 @@ impl Subscription {
             created_at: Utc::now().timestamp(),
             expires_at,
             event_data: None,
+            memo: None,
+            agent_id: None,
         })
     }
 
     pub fn condition_summary(&self) -> String {
-        match &self.condition {
+        let base = match &self.condition {
             Condition::Timer { duration, .. } => format!("timer {duration}"),
             Condition::GitHub(gh) => match gh {
                 GitHubCondition::PrMerged { repo, number } => format!("{repo} pr #{number} merged"),
@@ -109,7 +116,8 @@ impl Subscription {
                 GitHubCondition::CiFailure { repo, number } => format!("{repo} ci #{number} failure"),
                 GitHubCondition::CiCompleted { repo, number } => format!("{repo} ci #{number} completed"),
             },
-        }
+        };
+        base
     }
 
     #[allow(dead_code)]
@@ -364,6 +372,8 @@ mod tests {
             created_at: 0,
             expires_at: None,
             event_data: None,
+            memo: None,
+            agent_id: None,
         };
         assert_eq!(sub.condition_summary(), "foo/bar pr #42 merged");
 
