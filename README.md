@@ -95,6 +95,41 @@ Nudge runs a background daemon that manages subscriptions and polls for conditio
 
 Subscriptions are stored in SQLite at `~/.nudge/subscriptions.db` and survive process restarts.
 
+## Agent Skills
+
+Nudge ships with skill files that teach AI agents how to use it. Add them to your agent's context (e.g., in `CLAUDE.md` or system prompt).
+
+| Skill file | Use case |
+|------------|----------|
+| [`skills/nudge-cli.md`](skills/nudge-cli.md) | Direct use -- blocking `wait`, `on` callbacks, `list`/`cancel` |
+| [`skills/nudge-agent.md`](skills/nudge-agent.md) | Inside `nudge agent` -- non-blocking `--detach` with `--memo` |
+
+### Claude Code
+
+Add to your project's `CLAUDE.md`:
+
+```markdown
+<nudge-skill>
+{{paste contents of skills/nudge-cli.md}}
+</nudge-skill>
+```
+
+Or for agents managed by `nudge agent`:
+
+```markdown
+<nudge-skill>
+{{paste contents of skills/nudge-agent.md}}
+</nudge-skill>
+```
+
+### `nudge agent` with idle prompt
+
+When running `nudge agent`, pass the agent skill file so Claude knows how to use nudge:
+
+```bash
+nudge agent --idle-every 4h --idle-prompt-file idle.md -- --model sonnet --permission-mode bypassPermissions -a skills/nudge-agent.md
+```
+
 ## Build from source
 
 ```bash
