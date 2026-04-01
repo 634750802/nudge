@@ -34,6 +34,7 @@ struct AgentRunner {
 async fn run_claude_turn(runner: &mut AgentRunner, prompt: &str) -> Result<()> {
     let mut cmd = Command::new("claude");
     cmd.arg("-p")
+        .arg("--verbose")
         .arg("--output-format")
         .arg("stream-json");
 
